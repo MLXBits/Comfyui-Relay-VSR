@@ -1,0 +1,57 @@
+{
+  "RelayVSRModelLoader": {
+    "display_name": "RelayVSR 模型加载器",
+    "description": "加载 RelayVSR 的 Wan 主干与 Flash 解码器（支持原生 x2 与 x4 权重）。",
+    "inputs": {
+      "bundle": {
+        "name": "权重包",
+        "tooltip": "models/relayvsr 下配对好 wan/flash 权重的目录"
+      },
+      "dtype": {
+        "name": "精度"
+      },
+      "offload": {
+        "name": "Wan 逐块 offload",
+        "tooltip": "默认开启，逐块把 Wan 主干搬到 GPU；显存充裕时可关闭以加快参考帧"
+      },
+      "path": {
+        "name": "权重目录",
+        "tooltip": "自定义权重目录的绝对路径，留空则使用上面的下拉选择"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "模型"
+      }
+    }
+  },
+  "RelayVSRUpscale": {
+    "display_name": "RelayVSR 超分",
+    "description": "逐帧对图像序列做 RelayVSR 超分，像素进像素出。",
+    "inputs": {
+      "model": {
+        "name": "模型"
+      },
+      "images": {
+        "name": "图像"
+      },
+      "sr_ratio": {
+        "name": "放大倍率",
+        "tooltip": "x2 权重只能取 2；x4 权重可以取 2 或 4"
+      },
+      "chunk_len": {
+        "name": "分块帧数",
+        "tooltip": "每个流式窗口的帧数，越大越省窗口边界的重复计算"
+      },
+      "seed": {
+        "name": "种子",
+        "tooltip": "只影响参考帧的初始噪声"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "图像"
+      }
+    }
+  }
+}
