@@ -1,0 +1,15 @@
+# pyproject.toml
+[project]
+name = "Comfyui-Relay-VSR"
+description = "Implementation of the Relay-VSR and LightX2V Relay-VSR-2x as comfyui nodes."
+version = "0.0.1"
+license = { file = "LICENSE.txt" }
+dependencies  = [] 
+
+[project.urls]
+Repository = "https://github.com/bbaudio-2025/Comfyui-Relay-VSR"
+
+[tool.comfy]
+PublisherId = "bbaudio" 
+DisplayName = "Comfyui-Relay-VSR" 
+Icon = ""
