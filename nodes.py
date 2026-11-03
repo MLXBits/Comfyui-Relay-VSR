@@ -12,11 +12,12 @@ import torch
 import comfy.model_management as mm
 import comfy.utils
 import folder_paths
-from comfy_api.latest import ComfyExtension, io
+from comfy_api.latest import ComfyExtension, io, ui
 from typing_extensions import override
 
 from .checkpoints import inspect_bundle
 from .runtime import RelayVSREngine
+from .streaming import CODECS, PRESETS, stream_upscale
 
 MODEL_TYPE = io.Custom("RELAYVSR_MODEL")
 MODEL_DIR = "relayvsr"
@@ -84,6 +85,14 @@ def _release_current():
     if _current_model is not None:
         _current_model.free()
         _current_model = None
+
+
+def _images_to_frames(images):
+    return [frame.mul(255).round().clamp(0, 255).to(torch.uint8).cpu() for frame in images.movedim(-1, 1)]
+
+
+def _frames_to_images(frames):
+    return torch.stack([torch.from_numpy(frame) for frame in frames]).float().div(255.0)
 
 
 class RelayVSRModelLoader(io.ComfyNode):
@@ -179,19 +188,149 @@ class RelayVSRUpscale(io.ComfyNode):
     @classmethod
     def execute(cls, model, images, sr_ratio, chunk_len, seed):
         engine = model.ensure_loaded()
-        frames = [frame.mul(255).round().clamp(0, 255).to(torch.uint8).cpu() for frame in images.movedim(-1, 1)]
+        frames = _images_to_frames(images)
         progress = comfy.utils.ProgressBar(len(frames))
         outputs = []
         for pixel in engine.restore(frames, seed, sr_ratio, chunk_len, mm.throw_exception_if_processing_interrupted):
-            outputs.append(torch.from_numpy(pixel))
+            outputs.append(pixel)
             progress.update(1)
-        return io.NodeOutput(torch.stack(outputs).float().div(255.0))
+        return io.NodeOutput(_frames_to_images(outputs))
+
+
+class RelayVSRUpscaleStreaming(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="RelayVSRUpscaleStreaming",
+            display_name="RelayVSR Upscale Streaming",
+            category="video/upscaling",
+            description=(
+                "Upscale a video with RelayVSR without materializing it as IMAGE tensors. Frames are decoded "
+                "one time chunk at a time, each chunk is upscaled in spatial tiles, temporal overlaps are "
+                "crossfaded, and finished frames go straight to the encoder. The whole clip never sits in RAM."
+            ),
+            inputs=[
+                MODEL_TYPE.Input("model"),
+                io.Video.Input(
+                    "video",
+                    tooltip="The video to upscale. It is read and written incrementally; only one time chunk is in memory",
+                ),
+                io.Int.Input(
+                    "upscale_width",
+                    default=0,
+                    min=0,
+                    max=16384,
+                    step=2,
+                    tooltip="Final output width. Height follows the source aspect ratio and is rounded to even. 0 keeps width * sr_ratio",
+                ),
+                io.Int.Input(
+                    "sr_ratio",
+                    default=2,
+                    min=2,
+                    max=4,
+                    step=2,
+                    tooltip="x2 weights require 2; x4 weights accept 2 or 4",
+                ),
+                io.Int.Input(
+                    "chunk_len",
+                    default=24,
+                    min=2,
+                    max=64,
+                    tooltip="Frames per streaming pass and RelayVSR window; larger values blend fewer temporal seams but use more RAM",
+                ),
+                io.Int.Input(
+                    "seed",
+                    default=0,
+                    min=0,
+                    max=0xFFFFFFFFFFFFFFFF,
+                    control_after_generate=True,
+                    tooltip="Only affects the initial noise of reference frames",
+                ),
+                io.Int.Input(
+                    "chunk_overlap",
+                    default=4,
+                    min=0,
+                    max=256,
+                    tooltip="Frames crossfaded between adjacent time chunks; must be smaller than chunk_len",
+                ),
+                io.Int.Input(
+                    "spatial_grid_cols",
+                    default=1,
+                    min=1,
+                    max=8,
+                    tooltip="Number of tiles along the width; 1 disables horizontal tiling",
+                ),
+                io.Int.Input(
+                    "spatial_grid_rows",
+                    default=1,
+                    min=1,
+                    max=8,
+                    tooltip="Number of tiles along the height; 1 disables vertical tiling",
+                ),
+                io.Int.Input(
+                    "spatial_overlap",
+                    default=64,
+                    min=0,
+                    max=1024,
+                    step=8,
+                    tooltip="Overlap between spatial tiles in input pixels, crossfaded linearly",
+                ),
+                io.Combo.Input(
+                    "codec",
+                    options=list(CODECS),
+                    default="h264",
+                    tooltip="h264: compatible default. h265: smaller at the same quality. av1: smallest, slowest, WebM output",
+                ),
+                io.Float.Input(
+                    "crf",
+                    default=18.0,
+                    min=0.0,
+                    max=63.0,
+                    step=1.0,
+                    tooltip="Quality: lower is better and bigger. Values above each codec's limit are clamped",
+                ),
+                io.Combo.Input(
+                    "preset",
+                    options=PRESETS,
+                    default="medium",
+                    tooltip="Encoder speed vs compression; maps onto the numeric speed knob for AV1",
+                ),
+                io.String.Input(
+                    "filename_prefix",
+                    default="RelayVSR/upscaled",
+                    tooltip="Output name under ComfyUI's output directory; a counter is appended",
+                ),
+            ],
+            outputs=[
+                io.String.Output(
+                    "filename",
+                    tooltip="Absolute path of the saved video",
+                )
+            ],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def execute(
+        cls, model, video, upscale_width, sr_ratio, chunk_len, seed, chunk_overlap,
+        spatial_grid_cols, spatial_grid_rows, spatial_overlap, codec, crf, preset, filename_prefix,
+    ):
+        engine = model.ensure_loaded()
+        out_path, file_name, subfolder = stream_upscale(
+            engine, video, upscale_width, sr_ratio, chunk_len, seed, chunk_overlap,
+            spatial_grid_cols, spatial_grid_rows, spatial_overlap, codec, crf, preset, filename_prefix,
+            mm.throw_exception_if_processing_interrupted,
+        )
+        return io.NodeOutput(
+            out_path,
+            ui=ui.PreviewVideo([ui.SavedResult(file_name, subfolder, io.FolderType.output)]),
+        )
 
 
 class RelayVSRExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [RelayVSRModelLoader, RelayVSRUpscale]
+        return [RelayVSRModelLoader, RelayVSRUpscale, RelayVSRUpscaleStreaming]
 
 
 async def comfy_entrypoint() -> RelayVSRExtension:
