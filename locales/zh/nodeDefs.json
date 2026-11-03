@@ -53,5 +53,71 @@
         "name": "图像"
       }
     }
+  },
+  "RelayVSRUpscaleStreaming": {
+    "display_name": "RelayVSR 流式超分",
+    "description": "把视频按时间块流式解码，逐块做空间分块超分并融合重叠帧，完成的帧直接送入后台编码；整段视频不会以 IMAGE 张量形式驻留内存。",
+    "inputs": {
+      "model": {
+        "name": "模型"
+      },
+      "video": {
+        "name": "视频",
+        "tooltip": "要超分的视频；按时间块增量读取和写入，内存中只有一个时间块。Trim / Crop 元数据会自动应用"
+      },
+      "upscale_width": {
+        "name": "输出宽度",
+        "tooltip": "放大后的目标宽度；高度按源视频长宽比自动计算并取偶数。0 表示保持 width * sr_ratio"
+      },
+      "sr_ratio": {
+        "name": "放大倍率",
+        "tooltip": "x2 权重只能取 2；x4 权重可以取 2 或 4"
+      },
+      "chunk_len": {
+        "name": "时间块帧数",
+        "tooltip": "每次流式处理解码并超分的帧数，同时也是 RelayVSR 的流式窗口；越大时间接缝越少，内存占用越高"
+      },
+      "seed": {
+        "name": "种子",
+        "tooltip": "只影响参考帧的初始噪声"
+      },
+      "chunk_overlap": {
+        "name": "时间重叠帧数",
+        "tooltip": "相邻时间块之间做交叉融合的帧数，必须小于时间块帧数"
+      },
+      "spatial_grid_cols": {
+        "name": "空间列数",
+        "tooltip": "宽度方向的分块数；1 表示不做横向分块"
+      },
+      "spatial_grid_rows": {
+        "name": "空间行数",
+        "tooltip": "高度方向的分块数；1 表示不做纵向分块"
+      },
+      "spatial_overlap": {
+        "name": "空间重叠像素",
+        "tooltip": "空间分块之间的重叠像素，使用线性交叉融合"
+      },
+      "codec": {
+        "name": "编码器",
+        "tooltip": "h264：兼容性最好的默认值；h265：同质量下更小；av1：最小但最慢，输出 WebM"
+      },
+      "crf": {
+        "name": "CRF 质量",
+        "tooltip": "数值越低画质越好、文件越大；超过编码器上限时会被截断"
+      },
+      "preset": {
+        "name": "编码预设",
+        "tooltip": "编码速度与压缩率的权衡；AV1 会换算为数字速度档"
+      },
+      "filename_prefix": {
+        "name": "输出文件名前缀",
+        "tooltip": "输出到 ComfyUI output 目录下的文件名前缀，会自动追加序号"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文件路径"
+      }
+    }
   }
 }
