@@ -11,6 +11,7 @@ from pathlib import Path
 import torch
 import comfy.model_management as mm
 import comfy.utils
+from comfy.model_patcher import ModelPatcher
 import folder_paths
 from comfy_api.latest import ComfyExtension, io, ui
 from typing_extensions import override
@@ -54,27 +55,74 @@ def _scan_bundles():
 BUNDLES = _scan_bundles()
 
 
+class _EngineSlot(torch.nn.Module):
+    """ModelPatcher needs an nn.Module to track; the engine hangs off this one."""
+
+    def __init__(self):
+        super().__init__()
+        self.engine = None
+
+
+class RelayVSRPatcher(ModelPatcher):
+    """Registers the engine with ComfyUI model management.
+
+    The engine keeps its weights as plain tensors, not nn.Module parameters, so
+    the stock patcher cannot move them. This subclass loads and frees the whole
+    engine instead. "Unload models", /free and memory-pressure eviction then
+    release it like any other model.
+    """
+
+    def __init__(self, info, dtype, offload, device):
+        self.info = info
+        self.relay_dtype = dtype
+        self.offload = offload
+        # Estimate before the first load; partially_load replaces it with the measured VRAM.
+        size = os.path.getsize(info.wan_path) + os.path.getsize(info.flash_path)
+        super().__init__(_EngineSlot(), device, mm.unet_offload_device(), size=size)
+
+    def partially_load(self, device_to, extra_memory=0, force_patch_weights=False):
+        if self.model.engine is not None:
+            return 0
+        cuda = device_to.type == "cuda"
+        before = torch.cuda.memory_allocated(device_to) if cuda else 0
+        engine = RelayVSREngine(self.info, self.relay_dtype, self.offload, device_to)
+        try:
+            engine.load()
+        except Exception:
+            engine.free()
+            raise
+        self.model.engine = engine
+        self.model.device = device_to
+        if cuda:
+            self.size = max(torch.cuda.memory_allocated(device_to) - before, 1)
+        self.model.model_loaded_weight_memory = self.size
+        return self.size
+
+    def partially_unload(self, device_to, memory_to_free=0, force_patch_weights=False):
+        # The engine cannot be partly unloaded. Returning 0 makes ComfyUI call detach() and free all of it.
+        return 0
+
+    def detach(self, unpatch_all=True):
+        if self.model.engine is not None:
+            self.model.engine.free()
+            self.model.engine = None
+        self.model.device = self.offload_device
+        self.model.model_loaded_weight_memory = 0
+        return self.model
+
+
 class RelayVSRModel:
     """加载器输出：持有权重路径，首次超分时才把权重搬进显存。"""
 
     def __init__(self, info, dtype, offload):
-        self.info = info
-        self.dtype = dtype
-        self.offload = offload
-        self.device = mm.get_torch_device()
-        self.engine = None
+        self.patcher = RelayVSRPatcher(info, dtype, offload, mm.get_torch_device())
 
     def ensure_loaded(self):
-        if self.engine is None:
-            engine = RelayVSREngine(self.info, self.dtype, self.offload, self.device)
-            engine.load()
-            self.engine = engine
-        return self.engine
+        mm.load_models_gpu([self.patcher])
+        return self.patcher.model.engine
 
     def free(self):
-        if self.engine is not None:
-            self.engine.free()
-            self.engine = None
+        self.patcher.detach()
 
 
 _current_model = None
